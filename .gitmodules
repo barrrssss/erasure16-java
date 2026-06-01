@@ -1,0 +1,3 @@
+[submodule "external/erasure16-spec"]
+	path = external/erasure16-spec
+	url = https://github.com/barrrssss/erasure16-spec.git

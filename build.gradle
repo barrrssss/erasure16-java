@@ -1,0 +1,32 @@
+plugins {
+    id 'java-library'
+}
+
+group = 'io.github.barrrssss'
+version = '0.1.0'
+
+java {
+    // Java language level 11; compiled with the installed JDK (>= 11).
+    sourceCompatibility = JavaVersion.VERSION_11
+    targetCompatibility = JavaVersion.VERSION_11
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    // Test-only. No runtime dependencies (the library is pure, abstract code).
+    testImplementation platform('org.junit:junit-bom:5.10.2')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+test {
+    useJUnitPlatform()
+    testLogging {
+        events 'passed', 'skipped', 'failed'
+        showStandardStreams = true
+        exceptionFormat = 'full'
+    }
+}
