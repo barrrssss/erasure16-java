@@ -111,7 +111,20 @@ public final class ReedSolomon16 {
      *     lengths are invalid.
      */
     public void reconstruct(byte[][] shards, boolean[] shardPresent) {
-        reconstructInternal(shards, shardPresent, false);
+        reconstructInternal(shards, shardPresent, false, RecoveryAlgorithm.SUBMATRIX, null);
+    }
+
+    /**
+     * Reconstructs every missing shard in place (see
+     * {@link #reconstruct(byte[][], boolean[])}), reporting incremental progress to
+     * {@code listener} while the erasure math runs so a caller can drive a real progress
+     * bar. {@code listener} may be {@code null} (equivalent to the two-argument form).
+     *
+     * @throws Erasure16Exception if fewer than {@code K} shards are present, or lengths
+     *     are invalid.
+     */
+    public void reconstruct(byte[][] shards, boolean[] shardPresent, ProgressListener listener) {
+        reconstructInternal(shards, shardPresent, false, RecoveryAlgorithm.SUBMATRIX, listener);
     }
 
     /**
@@ -123,7 +136,52 @@ public final class ReedSolomon16 {
      *     lengths are invalid.
      */
     public void reconstructData(byte[][] shards, boolean[] shardPresent) {
-        reconstructInternal(shards, shardPresent, true);
+        reconstructInternal(shards, shardPresent, true, RecoveryAlgorithm.SUBMATRIX, null);
+    }
+
+    /**
+     * Reconstructs only the missing data shards in place (see
+     * {@link #reconstructData(byte[][], boolean[])}), reporting incremental progress to
+     * {@code listener} while the erasure math runs. {@code listener} may be {@code null}
+     * (equivalent to the two-argument form).
+     *
+     * @throws Erasure16Exception if fewer than {@code K} shards are present, or lengths
+     *     are invalid.
+     */
+    public void reconstructData(byte[][] shards, boolean[] shardPresent, ProgressListener listener) {
+        reconstructInternal(shards, shardPresent, true, RecoveryAlgorithm.SUBMATRIX, listener);
+    }
+
+    // Package-private seam: force a specific recovery algorithm. Production always uses
+    // SUBMATRIX (the two- and three-argument public methods); the differential tests and
+    // the benchmark use this to drive the legacy FULL_MATRIX path for comparison.
+    void reconstruct(byte[][] shards, boolean[] shardPresent, RecoveryAlgorithm algorithm) {
+        reconstructInternal(shards, shardPresent, false, algorithm, null);
+    }
+
+    void reconstructData(byte[][] shards, boolean[] shardPresent, RecoveryAlgorithm algorithm) {
+        reconstructInternal(shards, shardPresent, true, algorithm, null);
+    }
+
+    /**
+     * Selects how {@link #reconstructData}/{@link #reconstruct} recover missing <em>data</em>
+     * shards. Both produce byte-identical output (the recovered data is the unique solution
+     * of the erasure system); they differ only in cost.
+     */
+    enum RecoveryAlgorithm {
+        /**
+         * Legacy path: invert the full {@code K x K} reconstruction matrix
+         * ({@code O(K^3)} time, {@code O(K^2)} memory), independent of how many shards
+         * were lost. Retained as the differential-test oracle and benchmark baseline.
+         */
+        FULL_MATRIX,
+
+        /**
+         * Default path: solve only the {@code E x E} system for the {@code E} missing data
+         * shards ({@code O(E^3 + E*K*words)} time, {@code O(E*K)} memory). Equal to
+         * {@code FULL_MATRIX} only in the degenerate case {@code E == K} (all data lost).
+         */
+        SUBMATRIX
     }
 
     /**
@@ -250,7 +308,8 @@ public final class ReedSolomon16 {
         return output;
     }
 
-    private void reconstructInternal(byte[][] shards, boolean[] shardPresent, boolean dataOnly) {
+    private void reconstructInternal(byte[][] shards, boolean[] shardPresent, boolean dataOnly,
+            RecoveryAlgorithm algorithm, ProgressListener listener) {
         if (shards == null) {
             throw new Erasure16Exception("reconstruct: shards must not be null.");
         }
@@ -318,7 +377,14 @@ public final class ReedSolomon16 {
         }
 
         if (!allDataPresent) {
-            recoverDataFromSubmatrix(shards, shardPresent, words, shardLength);
+            if (algorithm == RecoveryAlgorithm.FULL_MATRIX) {
+                recoverDataFullMatrix(shards, shardPresent, words, shardLength);
+            } else {
+                recoverDataSubmatrix(shards, shardPresent, words, shardLength, listener);
+            }
+        } else if (listener != null) {
+            // No data missing: nothing to solve. Report a single completed tick.
+            listener.onProgress(1, 1);
         }
 
         // At this point all K data shards are present (either originally or just
@@ -352,11 +418,14 @@ public final class ReedSolomon16 {
     }
 
     /**
-     * Recovers the missing data shards by selecting K present shards, inverting their
-     * K x K generator submatrix, and applying it to the selected shard words. Assumes
-     * validation has already been performed and that at least one data shard is missing.
+     * Legacy recovery: select K present shards, invert their full {@code K x K} generator
+     * submatrix, and apply it to the selected shard words. Cost is {@code O(K^3)} time and
+     * {@code O(K^2)} memory regardless of how few shards were lost. Retained as the
+     * differential-test oracle and benchmark baseline for {@link #recoverDataSubmatrix};
+     * see {@link RecoveryAlgorithm}. Assumes validation has already run and that at least
+     * one data shard is missing.
      */
-    private void recoverDataFromSubmatrix(byte[][] shards, boolean[] shardPresent, int words, int shardLength) {
+    private void recoverDataFullMatrix(byte[][] shards, boolean[] shardPresent, int words, int shardLength) {
         int k = dataShardCount;
 
         // Select the first K present shards (any K distinct rows are invertible).
@@ -420,6 +489,211 @@ public final class ReedSolomon16 {
                 shardPresent[j] = true;
             }
         }
+    }
+
+    /**
+     * Optimized recovery: solve only the {@code E x E} system for the {@code E} missing
+     * data shards, instead of inverting the full {@code K x K} reconstruction matrix.
+     *
+     * <p>Choose {@code E} present parity shards as equations. Each parity value is the
+     * generator-weighted sum over all {@code K} data shards; subtracting the (known)
+     * contribution of the {@code K - E} present data shards leaves an {@code E x E} Cauchy
+     * system in the {@code E} unknown (missing) data words. Cost is {@code O(E^3)} to
+     * invert plus {@code O(E*K*words)} to apply, and {@code O(E*K)} memory — versus the
+     * legacy {@code O(K^3)} time and {@code O(K^2)} memory of
+     * {@link #recoverDataFullMatrix}. The recovered bytes are identical (the erasure
+     * solution is unique); this only avoids work proportional to the shards that were
+     * <em>not</em> lost. It reduces to the legacy cost exactly when {@code E == K} (all
+     * data lost). Assumes validation has run and at least one data shard is missing.
+     */
+    private void recoverDataSubmatrix(byte[][] shards, boolean[] shardPresent, int words, int shardLength,
+            ProgressListener listener) {
+        final int k = dataShardCount;
+        final int r = parityShardCount;
+
+        // Partition data columns into present / missing.
+        int[] missing = new int[k];
+        int[] presentData = new int[k];
+        int e = 0;
+        int presentDataCount = 0;
+        for (int j = 0; j < k; j++) {
+            if (shardPresent[j]) {
+                presentData[presentDataCount++] = j;
+            } else {
+                missing[e++] = j;
+            }
+        }
+        // e >= 1: the caller only invokes this when at least one data shard is missing.
+
+        // Choose E present parity shards to supply E independent equations. There are
+        // always at least E of them (presentCount >= K and only K - E data shards are present).
+        int[] parityP = new int[e];
+        int eq = 0;
+        for (int p = 0; p < r && eq < e; p++) {
+            if (shardPresent[k + p]) {
+                parityP[eq++] = p;
+            }
+        }
+        if (eq < e) {
+            throw new Erasure16Exception(
+                    "reconstruct: only " + eq + " present parity shards to recover " + e
+                            + " missing data shards.");
+        }
+
+        // A[i][c] = coeff(parity p_i, missing data col c): the E x E system to invert.
+        // B[i][c] = coeff(parity p_i, present data col c): folds the known data out of the RHS.
+        int[][] a = new int[e][e];
+        int[][] b = new int[e][presentDataCount];
+        for (int i = 0; i < e; i++) {
+            int p = parityP[i];
+            int[] arow = a[i];
+            for (int c = 0; c < e; c++) {
+                arow[c] = CauchyMatrix.parityCoeff(p, missing[c], r);
+            }
+            int[] brow = b[i];
+            for (int c = 0; c < presentDataCount; c++) {
+                brow[c] = CauchyMatrix.parityCoeff(p, presentData[c], r);
+            }
+        }
+
+        // Progress model (tracked only when a listener is attached): estimated field-op
+        // cost across the build, invert, and per-word phases, so the reported fraction is
+        // roughly proportional to real work no matter which phase dominates.
+        final long costBuild = (long) e * k;              // ~E*K coefficient lookups (A + B)
+        final long costInvertPerCol = 2L * e * e;         // ~2E^2 per Gauss-Jordan column
+        final long costInvert = costInvertPerCol * e;     // ~2E^3 total
+        final long costPerWord = (long) e * k;            // knownSum E*(K-E) + solve E^2 = E*K
+        final Progress progress = (listener == null) ? null
+                : new Progress(listener, costBuild + costInvert + (long) words * costPerWord);
+        if (progress != null) {
+            progress.set(costBuild);
+        }
+
+        int[][] aInv = CauchyMatrix.invert(a, e, progress == null ? null
+                : col -> progress.set(costBuild + (col + 1L) * costInvertPerCol));
+
+        // Ensure the missing data shards have buffers to receive the solution.
+        for (int c = 0; c < e; c++) {
+            ensureShard(shards, missing[c], shardLength);
+        }
+
+        // Resolve the shard byte arrays once (outside the per-word loop) so the hot loop
+        // indexes flat locals rather than double-dereferencing through index arrays.
+        byte[][] presentDataShards = new byte[presentDataCount][];
+        for (int c = 0; c < presentDataCount; c++) {
+            presentDataShards[c] = shards[presentData[c]];
+        }
+        byte[][] parityShards = new byte[e][];
+        byte[][] missingShards = new byte[e][];
+        for (int i = 0; i < e; i++) {
+            parityShards[i] = shards[k + parityP[i]];
+            missingShards[i] = shards[missing[i]];
+        }
+
+        final long afterInvert = costBuild + costInvert;
+        int[] pd = new int[presentDataCount]; // present-data words, gathered once per word
+        int[] rhs = new int[e];
+        for (int w = 0; w < words; w++) {
+            int bi = w * 2;
+
+            // Gather each present-data word once (it feeds every equation).
+            for (int c = 0; c < presentDataCount; c++) {
+                byte[] d = presentDataShards[c];
+                pd[c] = ((d[bi] & 0xFF) << 8) | (d[bi + 1] & 0xFF);
+            }
+
+            // rhs_i = parity_{p_i}[w] XOR (sum over present data of B[i][c] * pd[c]).
+            for (int i = 0; i < e; i++) {
+                int[] brow = b[i];
+                int pv = readWord(parityShards[i], bi);
+                rhs[i] = pv ^ dot(brow, pd, presentDataCount);
+            }
+
+            // missing_c[w] = sum over i of aInv[c][i] * rhs_i.
+            for (int c = 0; c < e; c++) {
+                int acc = dot(aInv[c], rhs, e);
+                byte[] out = missingShards[c];
+                out[bi] = (byte) (acc >>> 8);
+                out[bi + 1] = (byte) (acc & 0xFF);
+            }
+
+            if (progress != null) {
+                progress.set(afterInvert + (w + 1L) * costPerWord);
+            }
+        }
+
+        // Mark the recovered data shards present.
+        for (int c = 0; c < e; c++) {
+            shardPresent[missing[c]] = true;
+        }
+
+        if (progress != null) {
+            progress.done();
+        }
+    }
+
+    /**
+     * Throttled progress relay: forwards at most ~200 {@link ProgressListener#onProgress}
+     * calls over one decode, clamps to {@code [0, total]}, and guarantees one final
+     * exact-total tick via {@link #done()}.
+     */
+    private static final class Progress {
+        private final ProgressListener listener;
+        private final long total;
+        private final long minStep;
+        private long lastEmitted = -1;
+
+        Progress(ProgressListener listener, long total) {
+            this.listener = listener;
+            this.total = Math.max(1, total);
+            this.minStep = Math.max(1, this.total / 200);
+        }
+
+        void set(long completed) {
+            long clamped = Math.min(Math.max(completed, 0), total);
+            if (clamped < total && clamped - lastEmitted >= minStep) {
+                lastEmitted = clamped;
+                listener.onProgress(clamped, total);
+            }
+        }
+
+        void done() {
+            lastEmitted = total;
+            listener.onProgress(total, total);
+        }
+    }
+
+    /**
+     * GF(2^16) dot product: XOR over {@code i in [0, len)} of {@code mul(x[i], y[i])}.
+     * Four independent accumulators keep the XOR-reduction from being a single serial
+     * dependency chain; XOR is associative and commutative, so splitting and recombining is
+     * bit-identical to a straight left fold. (Measured effect is small — GF(2^16) decode is
+     * dominated by the multiply's exp/log table-load traffic rather than the reduction
+     * latency — but the shape is clean and does no harm.)
+     */
+    private static int dot(int[] x, int[] y, int len) {
+        int a0 = 0;
+        int a1 = 0;
+        int a2 = 0;
+        int a3 = 0;
+        int i = 0;
+        int limit = len - 3;
+        for (; i < limit; i += 4) {
+            a0 ^= Gf16.mul(x[i], y[i]);
+            a1 ^= Gf16.mul(x[i + 1], y[i + 1]);
+            a2 ^= Gf16.mul(x[i + 2], y[i + 2]);
+            a3 ^= Gf16.mul(x[i + 3], y[i + 3]);
+        }
+        int acc = a0 ^ a1 ^ a2 ^ a3;
+        for (; i < len; i++) {
+            acc ^= Gf16.mul(x[i], y[i]);
+        }
+        return acc;
+    }
+
+    /** Reads a big-endian 16-bit word from {@code shard} at byte offset {@code bi}. */
+    private static int readWord(byte[] shard, int bi) {
+        return ((shard[bi] & 0xFF) << 8) | (shard[bi + 1] & 0xFF);
     }
 
     private static byte[] ensureShard(byte[][] shards, int index, int shardLength) {

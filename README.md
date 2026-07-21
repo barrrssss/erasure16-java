@@ -38,12 +38,21 @@ rs.reconstruct(shards, shardPresent);       // recovers all missing shards
 rs.reconstructData(shards, shardPresent);   // recovers only missing data shards
 boolean ok = rs.verify(shards);             // re-encode check
 
+// Optional progress for long decodes (drive a UI progress bar; throw to cancel):
+rs.reconstructData(shards, shardPresent, (done, total) -> updateBar(done, total));
+
 byte[][] shards = ReedSolomon16.split(data, dataShardCount, shardSize);
 byte[] data = ReedSolomon16.join(dataShards, outputLength);
 ```
 
 `Gf16` exposes the field primitives `mul`, `div`, `inv`, `exp`, `log`. Invalid
 parameters, too-few-present shards, and bad shard lengths throw `Erasure16Exception`.
+
+Reconstruction solves only the `E×E` system for the `E` missing data shards rather than
+inverting the full `K×K` matrix — byte-identical output, far less memory (`~E·K` vs `K²`),
+and time that scales with the loss rather than the whole encoded set. See
+[`docs/decoder-optimization.md`](docs/decoder-optimization.md) for the math, correctness
+argument, measured results, and the `ProgressListener` design.
 
 ## Build and test
 

@@ -48,6 +48,16 @@ final class CauchyMatrix {
     }
 
     /**
+     * The generator coefficient of parity row {@code p} (in {@code 0..R-1}) at data
+     * column {@code j} (in {@code 0..K-1}): {@code inv(X_p XOR Y_j) = inv(p XOR (R + j))}
+     * (SPEC.md section 4). This is the single Cauchy entry the submatrix decoder reads
+     * to build its {@code E x E} system without materializing the full generator.
+     */
+    static int parityCoeff(int p, int j, int r) {
+        return Gf16.inv(p ^ (r + j));
+    }
+
+    /**
      * Builds the K x K matrix whose rows are the generator rows for the given
      * {@code rowIndices} (shard indices). {@code rowIndices} must have exactly K
      * entries. Returns a row-major K x K array.
@@ -68,6 +78,16 @@ final class CauchyMatrix {
      * guarded defensively).
      */
     static int[][] invert(int[][] matrix, int k) {
+        return invert(matrix, k, null);
+    }
+
+    /**
+     * Inverts a square K x K matrix over GF(2^16), invoking {@code onColumnDone}
+     * (if non-null) with the 0-based column index after each of the {@code k}
+     * elimination columns completes. The callback lets a caller report smooth progress
+     * through the {@code O(k^3)} inversion, which is otherwise a single opaque step.
+     */
+    static int[][] invert(int[][] matrix, int k, java.util.function.IntConsumer onColumnDone) {
         // Work on a copy of the input augmented with the identity on the right.
         int[][] a = new int[k][];
         int[][] inv = new int[k][];
@@ -134,6 +154,10 @@ final class CauchyMatrix {
                     aRow[j] ^= Gf16.mul(factor, aPiv[j]);
                     iRow[j] ^= Gf16.mul(factor, iPiv[j]);
                 }
+            }
+
+            if (onColumnDone != null) {
+                onColumnDone.accept(col);
             }
         }
 
