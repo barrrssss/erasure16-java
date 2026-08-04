@@ -176,8 +176,8 @@ not exactly — linear in wall-clock time. That is the right trade for a progres
 
 - **`erasure16-dotnet` port** — mirror `recoverDataSubmatrix`, `CauchyMatrix.ParityCoeff`,
   the `Invert` per-column callback, and a `ProgressListener`-equivalent, then re-run the
-  shared conformance vectors. (Deferred pending explicit go-ahead; consumer submodule
-  bumps follow that.)
+  shared conformance vectors. Consumer submodule updates follow that implementation
+  release.
 - **Optional spec clarification** — `erasure16-spec` SPEC §6 describes the K×K reconstruct as
   the reference; a one-line note that the reconstruct algorithm is *output-normative* (any
   method reproducing the vectors conforms) would make the submatrix path unambiguously
