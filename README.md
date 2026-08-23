@@ -16,6 +16,15 @@ The library is deliberately **abstract** — shard byte arrays in, shard byte ar
 out. It performs no I/O, compression, encryption, framing, or container concerns, and
 has **no runtime dependencies**.
 
+Current package version: **0.1.0**. It implements specification version **0.1.0**.
+See [`CHANGELOG.md`](CHANGELOG.md) for release history.
+
+After the first Maven Central release, depend on it with:
+
+```kotlin
+implementation("io.github.barrrssss:erasure16:0.1.0")
+```
+
 ## Field and format (summary)
 
 - Field GF(2¹⁶), reduction polynomial `0x1100B` (x¹⁶ + x¹² + x³ + x + 1), generator
@@ -56,7 +65,9 @@ argument, measured results, and the `ProgressListener` design.
 
 ## Build and test
 
-Requires JDK 11+ (built at Java language level 11). Uses the Gradle wrapper.
+The build requires **JDK 17 or newer** because Gradle 9 runs on Java 17+. Published
+classes remain **Java 11 compatible**: every Java compile task uses `--release 11`,
+which checks both class-file level and Java 11 API availability. Uses the Gradle wrapper.
 
 ```sh
 git submodule update --init   # pull the conformance vectors
@@ -67,3 +78,30 @@ git submodule update --init   # pull the conformance vectors
 `ConformanceTest` is the cross-language gate: it parses
 `external/erasure16-spec/vectors/MANIFEST.json` and asserts byte-exact reproduction of
 every field, encode, and reconstruct vector (and verifies the SHA-256 of each blob).
+
+## Maven Central publication
+
+The Kotlin DSL build configures the Central Portal target, GPG signing, sources and
+Javadoc JARs, and the required POM metadata. Before the first release, register the
+`io.github.barrrssss` namespace in Central Portal and configure a Portal user token
+plus a published GPG key outside the repository, following the
+[publishing plugin guide](https://vanniktech.github.io/gradle-maven-publish-plugin/central/).
+
+Stage a signed deployment manually with:
+
+```sh
+./gradlew clean build publishToMavenCentral
+```
+
+Then inspect and publish the deployment in Central Portal. Credentials and private
+keys must stay in the user Gradle configuration or environment; this repository does
+not define CI.
+
+## Status
+
+Pre-1.0 release candidate. The library is intentionally general-purpose and defines
+only shard-level coding behavior.
+
+## License
+
+[Apache License 2.0](LICENSE), matching the specification and .NET implementation.
