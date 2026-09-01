@@ -11,6 +11,7 @@ import java.nio.file.Paths;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -172,18 +173,12 @@ class ConformanceTest {
                 int k = asInt(c.get("k"));
                 int r = asInt(c.get("r"));
                 int shardLen = asInt(c.get("shardLen"));
-                List<Object> dataNames = asList(c.get("dataShards"));
-                List<Object> parityNames = asList(c.get("parityShards"));
 
-                assertEquals(k, dataNames.size(), "case " + name + ": dataShards count must equal K");
-                assertEquals(r, parityNames.size(), "case " + name + ": parityShards count must equal R");
+                byte[][] data = loadPart(c, "dataShards", "dataBlob", k, shardLen);
+                byte[][] expectedParity = loadPart(c, "parityShards", "parityBlob", r, shardLen);
 
                 byte[][] shards = new byte[k + r][];
-                for (int i = 0; i < k; i++) {
-                    byte[] d = readVector((String) dataNames.get(i));
-                    assertEquals(shardLen, d.length, "data shard length must equal shardLen");
-                    shards[i] = d;
-                }
+                System.arraycopy(data, 0, shards, 0, k);
                 for (int i = 0; i < r; i++) {
                     shards[k + i] = new byte[shardLen]; // parity slots to be filled
                 }
@@ -192,9 +187,7 @@ class ConformanceTest {
                 rs.encode(shards);
 
                 for (int p = 0; p < r; p++) {
-                    byte[] expected = readVector((String) parityNames.get(p));
-                    byte[] actual = shards[k + p];
-                    assertBytesEqual(name + " parity[" + p + "]", expected, actual);
+                    assertBytesEqual(name + " parity[" + p + "]", expectedParity[p], shards[k + p]);
                 }
 
                 // A correctly encoded set must also verify.
@@ -219,25 +212,30 @@ class ConformanceTest {
                 int k = asInt(c.get("k"));
                 int r = asInt(c.get("r"));
                 int n = k + r;
-                List<Object> presentList = asList(c.get("present"));
-                List<Object> expectedNames = asList(c.get("expectedShards"));
+                int shardLen = asInt(c.get("shardLen"));
 
-                assertEquals(n, presentList.size(), "case " + name + ": present mask must have N entries");
-                assertEquals(n, expectedNames.size(), "case " + name + ": expectedShards must have N entries");
+                boolean[] present = presentMask(c, n);
 
                 // Load the expected (full) shard set; this is the byte-exact target.
                 byte[][] expected = new byte[n][];
-                for (int i = 0; i < n; i++) {
-                    expected[i] = readVector((String) expectedNames.get(i));
+                if (c.get("expectedShards") != null) {
+                    List<Object> names = asList(c.get("expectedShards"));
+                    assertEquals(n, names.size(), "case " + name + ": expectedShards must have N entries");
+                    for (int i = 0; i < n; i++) {
+                        expected[i] = readVector((String) names.get(i));
+                    }
+                } else {
+                    byte[][] data = loadPart(c, "expectedShards", "expectedDataBlob", k, shardLen);
+                    byte[][] parity = loadPart(c, "expectedShards", "expectedParityBlob", r, shardLen);
+                    System.arraycopy(data, 0, expected, 0, k);
+                    System.arraycopy(parity, 0, expected, k, r);
                 }
 
                 // Build the input: present shards carry their expected bytes; absent
                 // shards are null and marked not-present.
-                boolean[] present = new boolean[n];
                 int presentCount = 0;
                 byte[][] shards = new byte[n][];
                 for (int i = 0; i < n; i++) {
-                    present[i] = (Boolean) presentList.get(i);
                     if (present[i]) {
                         shards[i] = expected[i].clone();
                         presentCount++;
@@ -261,12 +259,77 @@ class ConformanceTest {
     }
 
     /**
+     * Loads one part (data or parity) of a case's shards, in whichever layout of SPEC.md
+     * section 8 it uses: a per-shard file list, or a single concatenated blob. Exactly one
+     * must be present, so a case whose layout this reader did not understand cannot be
+     * skipped silently.
+     */
+    private static byte[][] loadPart(
+            Map<String, Object> c, String listKey, String blobKey, int count, int shardLen) {
+        Object list = c.get(listKey);
+        Object blob = c.get(blobKey);
+        assertTrue(list == null ^ blob == null,
+                "exactly one of " + listKey + " / " + blobKey + " must be present");
+
+        byte[][] shards = new byte[count][];
+        if (list != null) {
+            List<Object> names = asList(list);
+            assertEquals(count, names.size(), listKey + " count must match the case's shard count");
+            for (int i = 0; i < count; i++) {
+                shards[i] = readVector((String) names.get(i));
+                assertEquals(shardLen, shards[i].length, "shard length must equal shardLen");
+            }
+            return shards;
+        }
+
+        byte[] bytes = readVector((String) blob);
+        assertEquals(count * shardLen, bytes.length, blobKey + " length must be count * shardLen");
+        for (int i = 0; i < count; i++) {
+            shards[i] = new byte[shardLen];
+            System.arraycopy(bytes, i * shardLen, shards[i], 0, shardLen);
+        }
+        return shards;
+    }
+
+    /**
+     * A reconstruct case's present mask, from either the full {@code present} array or the
+     * compact {@code missing} index list of SPEC.md section 8.1.
+     */
+    private static boolean[] presentMask(Map<String, Object> c, int n) {
+        Object presentList = c.get("present");
+        Object missingList = c.get("missing");
+        assertTrue(presentList == null ^ missingList == null,
+                "exactly one of present / missing must be present");
+
+        boolean[] present = new boolean[n];
+        if (presentList != null) {
+            List<Object> values = asList(presentList);
+            assertEquals(n, values.size(), "present mask must have N entries");
+            for (int i = 0; i < n; i++) {
+                present[i] = (Boolean) values.get(i);
+            }
+            return present;
+        }
+
+        Arrays.fill(present, true);
+        int previous = -1;
+        for (Object entry : asList(missingList)) {
+            int index = asInt(entry);
+            assertTrue(index > previous, "missing indices must be strictly ascending");
+            assertTrue(index < n, "missing index is out of range");
+            present[index] = false;
+            previous = index;
+        }
+        return present;
+    }
+
+    /**
      * Sanity check that the manifest has the structure we expect, so a malformed or
      * truncated checkout fails loudly here rather than silently skipping cases.
      */
     @Test
     void manifestHasExpectedSections() {
-        assertEquals(1, asInt(manifest.get("manifestVersion")), "unexpected manifestVersion");
+        assertEquals(2, asInt(manifest.get("manifestVersion")), "unexpected manifestVersion");
         assertTrue(manifest.get("field") instanceof List, "field section missing");
         assertTrue(manifest.get("encode") instanceof List, "encode section missing");
         assertTrue(manifest.get("reconstruct") instanceof List, "reconstruct section missing");
