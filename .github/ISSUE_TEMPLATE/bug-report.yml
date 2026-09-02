@@ -1,0 +1,44 @@
+name: Bug report
+description: An encode, decode, or API behavior that looks wrong
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For a suspected security issue, use the Security tab's private reporting
+        instead of this form. See SECURITY.md.
+  - type: input
+    id: version
+    attributes:
+      label: Library version
+      placeholder: "0.1.1"
+    validations:
+      required: true
+  - type: input
+    id: runtime
+    attributes:
+      label: Runtime and version
+      placeholder: "Temurin 21"
+    validations:
+      required: true
+  - type: textarea
+    id: shape
+    attributes:
+      label: Codec parameters
+      description: The shape that reproduces it - `K` (data shards), `R` (parity shards), and shard length.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected, and what happened instead
+      description: |
+        If the disagreement is with a committed conformance vector, name the vector.
+        If it is with the other runtime, say which one you compared against.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproducer
+      description: The smallest code or input that shows it. Attach bytes if the shape is large.

@@ -1,7 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.1.1 — 2026-09-02
 
+- Codec behavior and public API are unchanged from 0.1.0. This release adopts a
+  larger conformance corpus and keeps the Java and .NET package versions aligned;
+  no library code changed.
 - Adopted specification **0.1.1**. It adds a transport-scale encode and reconstruct case
   at `K = 6410`, `R = 1744`, `shardLen = 8`. The shared vectors topped out at `K = 32`
   before, so this implementation had never been checked against the .NET one at a scale

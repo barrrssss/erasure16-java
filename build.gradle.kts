@@ -8,7 +8,7 @@ plugins {
 }
 
 group = "io.github.barrrssss"
-version = "0.1.0"
+version = "0.1.1"
 
 java {
     // Gradle 9 and the publishing plugin run on JDK 17 or newer.

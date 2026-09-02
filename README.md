@@ -16,13 +16,13 @@ The library is deliberately **abstract** — shard byte arrays in, shard byte ar
 out. It performs no I/O, compression, encryption, framing, or container concerns, and
 has **no runtime dependencies**.
 
-Current package version: **0.1.0**. It implements specification version **0.1.0**.
+Current package version: **0.1.1**. It implements specification version **0.1.1**.
 See [`CHANGELOG.md`](CHANGELOG.md) for release history.
 
 After the first Maven Central release, depend on it with:
 
 ```kotlin
-implementation("io.github.barrrssss:erasure16:0.1.0")
+implementation("io.github.barrrssss:erasure16:0.1.1")
 ```
 
 ## Field and format (summary)
